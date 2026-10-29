@@ -124,6 +124,7 @@ class EPGCard extends HTMLElement {
       this.content.addEventListener("click", (e) => {
         this._log(`click ${e.pointerType}`);
         if (e.pointerType === "mouse") return; // muis gebruikt hover
+        if (Date.now() - (this._lastTouch || 0) < 1000) return; // touchend deed het al
         over(e);
       });
       this.content.addEventListener("touchstart", hideTip, { passive: true });
@@ -602,9 +603,24 @@ class EPGCard extends HTMLElement {
         (e) => {
           const t = e.touches[0];
           this._log(`touchstart on ${(e.target.className || e.target.tagName) + ""}`);
-          this._tap = t ? { x: t.clientX, y: t.clientY, at: Date.now() } : null;
-          this._tipProg = null;
-          this._tip.style.display = "none";
+          // De tooltip blijft staan tot er gescrold wordt of ergens anders
+          // getikt: hier dus niet verbergen (anders verdwijnt hij zodra je
+          // je vinger erop laat rusten).
+          this._tap = t ? { x: t.clientX, y: t.clientY } : null;
+        },
+        { passive: true }
+      );
+      scrollEl.addEventListener(
+        "touchmove",
+        (e) => {
+          const t0 = this._tap;
+          const t = e.touches[0];
+          if (!t0 || !t) return;
+          if (Math.hypot(t.clientX - t0.x, t.clientY - t0.y) > 12) {
+            this._tap = null; // het is een scroll, geen tik
+            this._tipProg = null;
+            this._tip.style.display = "none";
+          }
         },
         { passive: true }
       );
@@ -617,8 +633,15 @@ class EPGCard extends HTMLElement {
           this._tap = null;
           if (!t0 || !t) return;
           const moved = Math.hypot(t.clientX - t0.x, t.clientY - t0.y);
-          if (moved > 12 || Date.now() - t0.at > 600) return;
+          if (moved > 12) return;
           this._lastTouch = Date.now();
+          const prog = e.target.closest ? e.target.closest(".program") : null;
+          if (prog && prog === this._tipProg && this._tip.style.display === "block") {
+            // nogmaals tikken op hetzelfde programma sluit de tooltip
+            this._tipProg = null;
+            this._tip.style.display = "none";
+            return;
+          }
           this._showTip({ target: e.target });
           const tr = this._tip.getBoundingClientRect();
           this._log(
