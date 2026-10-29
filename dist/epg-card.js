@@ -122,12 +122,15 @@ class EPGCard extends HTMLElement {
         this._tip.style.display = "none";
       };
       this.content.addEventListener("click", (e) => {
+        this._log(`click ${e.pointerType}`);
         if (e.pointerType === "mouse") return; // muis gebruikt hover
         over(e);
       });
       this.content.addEventListener("touchstart", hideTip, { passive: true });
       this._onDocClick = (e) => {
-        if (e.pointerType !== "mouse" && !this.contains(e.target)) hideTip();
+        // composedPath: in HA zit de kaart in shadow DOM, e.target is dan geherrichte host
+        if (e.pointerType !== "mouse" && !e.composedPath().includes(this))
+          hideTip();
       };
       document.addEventListener("click", this._onDocClick);
       this.content.addEventListener("mouseleave", () => {
@@ -598,6 +601,7 @@ class EPGCard extends HTMLElement {
         "touchstart",
         (e) => {
           const t = e.touches[0];
+          this._log(`touchstart on ${(e.target.className || e.target.tagName) + ""}`);
           this._tap = t ? { x: t.clientX, y: t.clientY, at: Date.now() } : null;
           this._tipProg = null;
           this._tip.style.display = "none";
@@ -609,12 +613,17 @@ class EPGCard extends HTMLElement {
         (e) => {
           const t0 = this._tap;
           const t = e.changedTouches[0];
+          this._log(`touchend tap=${!!t0}`);
           this._tap = null;
           if (!t0 || !t) return;
           const moved = Math.hypot(t.clientX - t0.x, t.clientY - t0.y);
           if (moved > 12 || Date.now() - t0.at > 600) return;
           this._lastTouch = Date.now();
           this._showTip({ target: e.target });
+          const tr = this._tip.getBoundingClientRect();
+          this._log(
+            `tap -> tip ${this._tip.style.display} prog=${!!this._tipProg} rect=${Math.round(tr.left)},${Math.round(tr.top)} ${Math.round(tr.width)}x${Math.round(tr.height)}`
+          );
         },
         { passive: true }
       );
@@ -783,6 +792,40 @@ class EPGCard extends HTMLElement {
     this._movieBusy[cacheKey] = run;
     run.finally(() => delete this._movieBusy[cacheKey]);
     return run;
+  }
+
+  // debug: true in de kaartconfig toont onderin het scherm een kort logboek
+  // van touch-/muisgebeurtenissen en fouten (voor diagnose op een telefoon).
+  _log(msg) {
+    if (!this.config || !this.config.debug) return;
+    if (!this._dbg) {
+      this._dbg = document.createElement("pre");
+      Object.assign(this._dbg.style, {
+        position: "fixed",
+        left: "0",
+        right: "0",
+        bottom: "0",
+        zIndex: "100000",
+        margin: "0",
+        padding: "4px 6px",
+        font: "11px/1.3 monospace",
+        background: "rgba(0,0,0,.85)",
+        color: "#0f0",
+        pointerEvents: "none",
+        whiteSpace: "pre-wrap",
+        maxHeight: "40vh",
+        overflow: "hidden",
+      });
+      document.body.appendChild(this._dbg);
+      this._dbgLines = [];
+      window.addEventListener("error", (e) =>
+        this._log(`ERROR ${e.message} @${(e.filename || "").split("/").pop()}:${e.lineno}`)
+      );
+    }
+    const t = new Date().toISOString().slice(14, 23);
+    this._dbgLines.push(`${t} ${msg}`);
+    this._dbgLines = this._dbgLines.slice(-12);
+    this._dbg.textContent = this._dbgLines.join("\n");
   }
 
   connectedCallback() {

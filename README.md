@@ -73,6 +73,7 @@ logos:                  # optional: override logo per channel (name OR entity id
 | `tmdb_language` | string | `nl-NL` | Language of the TMDB description. |
 | `film_min_minutes` | number | 80 | A programme is only looked up when it lasts at least this long… |
 | `film_max_desc_length` | number | 100 | …has no subtitle, and its description is shorter than this many characters. |
+| `debug` | boolean | false | Shows a small on-screen log of touch/mouse events and errors at the bottom of the screen (for diagnosing problems on a phone). |
 | `hour_width`       | number (px)     | –       | Fixed width per hour; overrides the responsive sizing. |
 | `logo_size`        | number (px)     | 36      | Maximum logo height. |
 | `strip_prefix`     | string or list  | –       | Prefix(es) removed from channel names in the display. |
