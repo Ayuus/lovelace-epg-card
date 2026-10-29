@@ -52,7 +52,8 @@ class EPGCard extends HTMLElement {
           return;
         }
         const prog = e.target.closest ? e.target.closest(".program") : null;
-        if (prog === this._tipProg) return; // zelfde programma: niets doen
+        // zelfde programma en al zichtbaar: niets doen
+        if (prog === this._tipProg && this._tip.style.display === "block") return;
         this._tipProg = prog;
         if (!prog) {
           this._tip.style.display = "none";
@@ -179,10 +180,23 @@ class EPGCard extends HTMLElement {
         d.sc.scrollTop = d.t - (e.clientY - d.y);
         e.preventDefault(); // geen tekst-/afbeeldingselectie tijdens slepen
       });
-      window.addEventListener("mouseup", () => {
-        if (!this._drag) return;
-        this._drag.sc.style.cursor = "";
+      window.addEventListener("mouseup", (e) => {
+        const d = this._drag;
+        if (!d) return;
+        d.sc.style.cursor = "";
         this._drag = null;
+        // Zonder echt te slepen (gewone klik): tooltip weer tonen.
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 4) {
+          const el = e.composedPath ? e.composedPath()[0] : e.target;
+          this._showTip({ target: el });
+        }
+      });
+      // Tooltip is verborgen terwijl de muis boven een programma staat
+      // (na klik/slepen): bij beweging weer tonen.
+      this.content.addEventListener("mousemove", (e) => {
+        if (this._drag || e.buttons) return;
+        if (this._tip.style.display === "block") return;
+        this._showTip(e);
       });
     }
     this._hass = hass;
@@ -635,6 +649,16 @@ class EPGCard extends HTMLElement {
           const moved = Math.hypot(t.clientX - t0.x, t.clientY - t0.y);
           if (moved > 12) return;
           this._lastTouch = Date.now();
+          if (this._tip.style.display === "block") {
+            const tr = this._tip.getBoundingClientRect();
+            if (
+              t.clientX >= tr.left &&
+              t.clientX <= tr.right &&
+              t.clientY >= tr.top &&
+              t.clientY <= tr.bottom
+            )
+              return; // tik op de tooltip zelf: laten staan
+          }
           const prog = e.target.closest ? e.target.closest(".program") : null;
           if (prog && prog === this._tipProg && this._tip.style.display === "block") {
             // nogmaals tikken op hetzelfde programma sluit de tooltip
