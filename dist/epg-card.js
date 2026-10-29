@@ -36,10 +36,49 @@ class EPGCard extends HTMLElement {
         fontSize: "14px",
         lineHeight: "1.5",
         maxWidth: "300px",
+        maxHeight: "70vh",
+        overflowY: "auto",
+        overscrollBehavior: "contain",
+        touchAction: "pan-y",
         whiteSpace: "normal",
         boxShadow: "0 4px 8px rgba(0, 0, 0, 0.2)",
       });
       document.body.appendChild(this._tip);
+      // Touch: de tooltip is aanraakbaar. Een tik sluit hem; een veeg scrolt
+      // de tekst (bij lange omschrijvingen).
+      this._tipTap = null;
+      this._tip.addEventListener(
+        "touchstart",
+        (e) => {
+          const t = e.touches[0];
+          this._tipTap = t ? { x: t.clientX, y: t.clientY } : null;
+        },
+        { passive: true }
+      );
+      this._tip.addEventListener(
+        "touchmove",
+        (e) => {
+          const t = e.touches[0];
+          const t0 = this._tipTap;
+          if (t0 && t && Math.hypot(t.clientX - t0.x, t.clientY - t0.y) > 12)
+            this._tipTap = null; // veeg, geen tik
+        },
+        { passive: true }
+      );
+      this._tip.addEventListener(
+        "touchend",
+        (e) => {
+          const t0 = this._tipTap;
+          this._tipTap = null;
+          if (!t0) return;
+          this._lastTouch = Date.now();
+          if (e.cancelable) e.preventDefault(); // geen nagebootste klik erdoorheen
+          this._tipProg = null;
+          this._tip.style.display = "none";
+          this._tip.style.pointerEvents = "none";
+        },
+        { passive: false }
+      );
 
       // Tooltip via event-delegatie (overleeft herbouw): het vaste kaartje wordt
       // gecentreerd (fixed) binnen het programma waar de muis op staat, en
@@ -112,7 +151,12 @@ class EPGCard extends HTMLElement {
           );
         }
       });
-      this.content.addEventListener("mouseover", over);
+      const mouseShow = (e) => {
+        if (Date.now() - (this._lastTouch || 0) < 1000) return; // emulatie na tik
+        this._tip.style.pointerEvents = "none";
+        over(e);
+      };
+      this.content.addEventListener("mouseover", mouseShow);
       // Touch: een tik toont de tooltip (er is geen hover). De emulatie-
       // mousedown van de browser verbergt hem weer, dus pas bij 'click' tonen.
       const hideTip = () => {
@@ -128,7 +172,12 @@ class EPGCard extends HTMLElement {
       this.content.addEventListener("touchstart", hideTip, { passive: true });
       this._onDocClick = (e) => {
         // composedPath: in HA zit de kaart in shadow DOM, e.target is dan geherrichte host
-        if (e.pointerType !== "mouse" && !e.composedPath().includes(this))
+        const path = e.composedPath();
+        if (
+          e.pointerType !== "mouse" &&
+          !path.includes(this) &&
+          !path.includes(this._tip)
+        )
           hideTip();
       };
       document.addEventListener("click", this._onDocClick);
@@ -190,7 +239,7 @@ class EPGCard extends HTMLElement {
       this.content.addEventListener("mousemove", (e) => {
         if (this._drag || e.buttons) return;
         if (this._tip.style.display === "block") return;
-        this._showTip(e);
+        mouseShow(e);
       });
     }
     this._hass = hass;
@@ -643,16 +692,6 @@ class EPGCard extends HTMLElement {
           const moved = Math.hypot(t.clientX - t0.x, t.clientY - t0.y);
           if (moved > 12) return;
           this._lastTouch = Date.now();
-          if (this._tip.style.display === "block") {
-            const tr = this._tip.getBoundingClientRect();
-            if (
-              t.clientX >= tr.left &&
-              t.clientX <= tr.right &&
-              t.clientY >= tr.top &&
-              t.clientY <= tr.bottom
-            )
-              return; // tik op de tooltip zelf: laten staan
-          }
           const prog = e.target.closest ? e.target.closest(".program") : null;
           if (prog && prog === this._tipProg && this._tip.style.display === "block") {
             // nogmaals tikken op hetzelfde programma sluit de tooltip
@@ -661,6 +700,10 @@ class EPGCard extends HTMLElement {
             return;
           }
           this._showTip({ target: e.target });
+          if (this._tip.style.display === "block") {
+            this._tip.style.pointerEvents = "auto";
+            this._tip.scrollTop = 0;
+          }
           const tr = this._tip.getBoundingClientRect();
           this._log(
             `tap -> tip ${this._tip.style.display} prog=${!!this._tipProg} rect=${Math.round(tr.left)},${Math.round(tr.top)} ${Math.round(tr.width)}x${Math.round(tr.height)}`
