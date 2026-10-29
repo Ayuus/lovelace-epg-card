@@ -67,14 +67,46 @@ class EPGCard extends HTMLElement {
           }
         );
         this._tip.style.display = "block";
-        const pr = prog.getBoundingClientRect();
-        const tr = this._tip.getBoundingClientRect();
-        let x = pr.left + pr.width / 2 - tr.width / 2; // horizontaal centreren
-        let y = pr.top + pr.height / 2 - tr.height / 2; // verticaal centreren
-        x = Math.max(4, Math.min(x, window.innerWidth - tr.width - 4));
-        y = Math.max(4, Math.min(y, window.innerHeight - tr.height - 4));
-        this._tip.style.left = `${x}px`;
-        this._tip.style.top = `${y}px`;
+        const place = () => {
+          const pr = prog.getBoundingClientRect();
+          const tr = this._tip.getBoundingClientRect();
+          let x = pr.left + pr.width / 2 - tr.width / 2; // horizontaal centreren
+          let y = pr.top + pr.height / 2 - tr.height / 2; // verticaal centreren
+          x = Math.max(4, Math.min(x, window.innerWidth - tr.width - 4));
+          y = Math.max(4, Math.min(y, window.innerHeight - tr.height - 4));
+          this._tip.style.left = `${x}px`;
+          this._tip.style.top = `${y}px`;
+        };
+        place();
+
+        // Films: aanvullende gegevens van TMDB (alleen met tmdb_api_key).
+        if (this._isFilmCandidate(prog.dataset)) {
+          this._lookupMovie(prog.dataset.title, prog.dataset.dur).then(
+            (info) => {
+              if (!info || this._tipProg !== prog) return;
+              const meta = [
+                info.rating ? `★ ${info.rating}` : "",
+                info.year,
+                info.runtime ? `${info.runtime} min` : "",
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              [meta, info.overview, "Bron: TMDB"].forEach((t, i) => {
+                if (!t) return;
+                const d = document.createElement("div");
+                d.textContent = t;
+                if (i === 0) d.style.fontWeight = "bold";
+                if (i === 2) {
+                  d.style.fontSize = "11px";
+                  d.style.opacity = "0.6";
+                }
+                if (i > 0) d.style.marginTop = "6px";
+                this._tip.appendChild(d);
+              });
+              place();
+            }
+          );
+        }
       };
       this.content.addEventListener("mouseover", over);
       this.content.addEventListener("mouseleave", () => {
@@ -187,6 +219,7 @@ class EPGCard extends HTMLElement {
           list.push({
             title: program.title,
             desc: program.desc,
+            sub: program.sub_title,
             start: start_time,
             end: end_time,
             startAbs: startAbs,
@@ -508,6 +541,8 @@ class EPGCard extends HTMLElement {
                                             style="left: ${left}px; width: ${width}px;"
                                             data-title="${this._esc(program.title)}"
                                             data-desc="${this._esc(program.desc)}"
+                                            data-sub="${this._esc(program.sub)}"
+                                            data-dur="${program.endAbs - program.startAbs}"
                                             data-times="${this._esc(program.start)}-${this._esc(program.end)}">
                                             <span class="prog-title">${this._esc(
                                               program.title
@@ -596,6 +631,110 @@ class EPGCard extends HTMLElement {
       }
     }
     return name;
+  }
+
+  // Lijkt dit programma een film? (lang, geen ondertitel, weinig omschrijving)
+  _isFilmCandidate(d) {
+    if (!this.config.tmdb_api_key) return false;
+    const minDur = this.config.film_min_minutes || 80;
+    const maxDesc = this.config.film_max_desc_length || 100;
+    return (
+      Number(d.dur) >= minDur &&
+      !(d.sub || "").trim() &&
+      (d.desc || "").trim().length < maxDesc
+    );
+  }
+
+  _normTitle(t) {
+    return String(t || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/^(film|speelfilm|bioscoop)\s*:\s*/, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  }
+
+  // Zoek de film bij TMDB; resultaat (ook "niet gevonden") wordt 30 dagen
+  // in localStorage bewaard. Geeft null als er niets betrouwbaars is.
+  async _lookupMovie(rawTitle, dur) {
+    const durMin = Number(dur);
+    const key = this.config.tmdb_api_key;
+    const lang = this.config.tmdb_language || "nl-NL";
+    const yearMatch = String(rawTitle).match(/\((\d{4})\)\s*$/);
+    const year = yearMatch ? yearMatch[1] : "";
+    const title = String(rawTitle).replace(/\s*\(\d{4}\)\s*$/, "").trim();
+    const want = this._normTitle(title);
+    if (!want) return null;
+
+    const cacheKey = `${lang}|${want}|${year}|${Math.round(durMin / 15)}`;
+    this._movieMem = this._movieMem || {};
+    const TTL = 30 * 24 * 3600 * 1000;
+    const read = () => {
+      try {
+        return JSON.parse(localStorage.getItem("epg-card-movies") || "{}");
+      } catch (e) {
+        return {};
+      }
+    };
+    const hit = this._movieMem[cacheKey] || read()[cacheKey];
+    if (hit && Date.now() - hit.t < TTL) return hit.info;
+    if (this._movieBusy && this._movieBusy[cacheKey])
+      return this._movieBusy[cacheKey];
+
+    this._movieBusy = this._movieBusy || {};
+    const run = (async () => {
+      const bearer = key.length > 40; // v4-token i.p.v. v3-sleutel
+      const headers = bearer ? { Authorization: `Bearer ${key}` } : {};
+      const api = async (path, params) => {
+        const q = new URLSearchParams({ language: lang, ...params });
+        if (!bearer) q.set("api_key", key);
+        const r = await fetch(`https://api.themoviedb.org/3/${path}?${q}`, {
+          headers,
+        });
+        if (!r.ok) throw new Error(`TMDB ${r.status}`);
+        return r.json();
+      };
+      let info = null;
+      try {
+        const sp = { query: title };
+        if (year) sp.year = year;
+        const res = (await api("search/movie", sp)).results || [];
+        const exact = res
+          .filter(
+            (m) =>
+              this._normTitle(m.title) === want ||
+              this._normTitle(m.original_title) === want
+          )
+          .slice(0, 3);
+        for (const m of exact) {
+          const det = await api(`movie/${m.id}`, {});
+          const rt = det.runtime || 0;
+          // Zendtijd bevat reclame: speelduur ligt iets onder de blokduur.
+          if (rt && (rt > durMin + 10 || rt < durMin - 60)) continue;
+          if (!det.overview) continue;
+          info = {
+            overview: det.overview,
+            year: (det.release_date || "").slice(0, 4),
+            rating: det.vote_average ? det.vote_average.toFixed(1) : "",
+            runtime: rt,
+          };
+          break;
+        }
+      } catch (e) {
+        return null; // netwerk/sleutelfout: niet cachen, later opnieuw proberen
+      }
+      const store = read();
+      store[cacheKey] = { t: Date.now(), info };
+      try {
+        localStorage.setItem("epg-card-movies", JSON.stringify(store));
+      } catch (e) {}
+      this._movieMem[cacheKey] = { t: Date.now(), info };
+      return info;
+    })();
+    this._movieBusy[cacheKey] = run;
+    run.finally(() => delete this._movieBusy[cacheKey]);
+    return run;
   }
 
   _esc(s) {

@@ -69,6 +69,10 @@ logos:                  # optional: override logo per channel (name OR entity id
 | `hours_per_screen` | number          | 8       | Target number of hours visible across the card width (responsive). |
 | `min_hour_width`   | number (px)     | 80      | Lower bound for the hour width (readability on small screens). |
 | `start_offset_minutes` | number      | 30      | On first render the card scrolls so the left edge is at *now minus this many minutes*. Earlier programmes stay reachable by scrolling left. |
+| `tmdb_api_key` | string | – | Enables movie info in the tooltip: rating, year, runtime and a description from [TMDB](https://www.themoviedb.org/). Accepts a v3 API key or a v4 read token. Note: the key is visible in your dashboard config. |
+| `tmdb_language` | string | `nl-NL` | Language of the TMDB description. |
+| `film_min_minutes` | number | 80 | A programme is only looked up when it lasts at least this long… |
+| `film_max_desc_length` | number | 100 | …has no subtitle, and its description is shorter than this many characters. |
 | `hour_width`       | number (px)     | –       | Fixed width per hour; overrides the responsive sizing. |
 | `logo_size`        | number (px)     | 36      | Maximum logo height. |
 | `strip_prefix`     | string or list  | –       | Prefix(es) removed from channel names in the display. |
@@ -81,3 +85,7 @@ All of these are also editable in the card's visual (UI) editor.
 - Integration: [yohaybn/HomeAssistant-EPG](https://github.com/yohaybn/HomeAssistant-EPG)
 - Original card: [yohaybn/lovelace-epg-card](https://github.com/yohaybn/lovelace-epg-card)
   and [peno64/lovelace-epg-card](https://github.com/peno64/lovelace-epg-card)
+
+## Movie info (TMDB)
+
+With `tmdb_api_key` set, hovering over a likely movie (long, no subtitle, little description) looks it up on TMDB by exact title. A match is only used when the runtime fits the programme length. Results, including misses, are cached in the browser for 30 days. This product uses the TMDB API but is not endorsed or certified by TMDB. Programme titles are sent to TMDB.
