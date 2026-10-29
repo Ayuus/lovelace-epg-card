@@ -45,12 +45,9 @@ class EPGCard extends HTMLElement {
       // gecentreerd (fixed) binnen het programma waar de muis op staat, en
       // geklemd binnen het scherm.
       const over = (this._showTip = (e) => {
-        if (this._drag) {
-          // tijdens muis-slepen geen tooltip
-          this._tip.style.display = "none";
-          this._tipProg = null;
-          return;
-        }
+        // Tijdens muis-slepen niets wijzigen; de tooltip wordt bij echte
+        // verplaatsing verborgen (zie mousemove).
+        if (this._drag) return;
         const prog = e.target.closest ? e.target.closest(".program") : null;
         // zelfde programma en al zichtbaar: niets doen
         if (prog === this._tipProg && this._tip.style.display === "block") return;
@@ -170,26 +167,23 @@ class EPGCard extends HTMLElement {
           t: sc.scrollTop,
         };
         sc.style.cursor = "grabbing";
-        this._tip.style.display = "none";
-        this._tipProg = null;
       });
       window.addEventListener("mousemove", (e) => {
         const d = this._drag;
         if (!d) return;
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) {
+          this._tip.style.display = "none";
+          this._tipProg = null;
+        }
         d.sc.scrollLeft = d.l - (e.clientX - d.x);
         d.sc.scrollTop = d.t - (e.clientY - d.y);
         e.preventDefault(); // geen tekst-/afbeeldingselectie tijdens slepen
       });
-      window.addEventListener("mouseup", (e) => {
+      window.addEventListener("mouseup", () => {
         const d = this._drag;
         if (!d) return;
         d.sc.style.cursor = "";
         this._drag = null;
-        // Zonder echt te slepen (gewone klik): tooltip weer tonen.
-        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 4) {
-          const el = e.composedPath ? e.composedPath()[0] : e.target;
-          this._showTip({ target: el });
-        }
       });
       // Tooltip is verborgen terwijl de muis boven een programma staat
       // (na klik/slepen): bij beweging weer tonen.
