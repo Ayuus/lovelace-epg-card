@@ -59,7 +59,13 @@ class EPGCard extends HTMLElement {
           return;
         }
         this._tip.replaceChildren();
-        [prog.dataset.title, prog.dataset.desc, prog.dataset.times].forEach(
+        // Omschrijving die gewoon de titel herhaalt weglaten.
+        const desc =
+          this._normTitle(prog.dataset.desc) ===
+          this._normTitle(prog.dataset.title)
+            ? ""
+            : prog.dataset.desc;
+        [prog.dataset.title, desc, prog.dataset.times].forEach(
           (t) => {
             const d = document.createElement("div");
             d.textContent = t || "";
