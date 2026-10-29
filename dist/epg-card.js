@@ -39,12 +39,12 @@ class EPGCard extends HTMLElement {
         whiteSpace: "normal",
         boxShadow: "0 4px 8px rgba(0, 0, 0, 0.2)",
       });
-      this.appendChild(this._tip);
+      document.body.appendChild(this._tip);
 
       // Tooltip via event-delegatie (overleeft herbouw): het vaste kaartje wordt
       // gecentreerd (fixed) binnen het programma waar de muis op staat, en
       // geklemd binnen het scherm.
-      const over = (e) => {
+      const over = (this._showTip = (e) => {
         if (this._drag) {
           // tijdens muis-slepen geen tooltip
           this._tip.style.display = "none";
@@ -113,7 +113,7 @@ class EPGCard extends HTMLElement {
             }
           );
         }
-      };
+      });
       this.content.addEventListener("mouseover", over);
       // Touch: een tik toont de tooltip (er is geen hover). De emulatie-
       // mousedown van de browser verbergt hem weer, dus pas bij 'click' tonen.
@@ -154,6 +154,7 @@ class EPGCard extends HTMLElement {
       this._drag = null;
       this.content.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return; // alleen linkermuisknop
+        if (Date.now() - (this._lastTouch || 0) < 1000) return; // emulatie na tik
         const sc = e.target.closest && e.target.closest(".epg-scroll");
         if (!sc) return;
         this._drag = {
@@ -591,6 +592,32 @@ class EPGCard extends HTMLElement {
       };
       scrollEl.addEventListener("scroll", sync, { passive: true });
       // Voorkom dat de HA-app horizontale swipes onderschept (view-navigatie)
+      // Tik-herkenning (niet afhankelijk van door de browser nagebootste
+      // muis-events): kort en zonder te bewegen = tooltip tonen.
+      scrollEl.addEventListener(
+        "touchstart",
+        (e) => {
+          const t = e.touches[0];
+          this._tap = t ? { x: t.clientX, y: t.clientY, at: Date.now() } : null;
+          this._tipProg = null;
+          this._tip.style.display = "none";
+        },
+        { passive: true }
+      );
+      scrollEl.addEventListener(
+        "touchend",
+        (e) => {
+          const t0 = this._tap;
+          const t = e.changedTouches[0];
+          this._tap = null;
+          if (!t0 || !t) return;
+          const moved = Math.hypot(t.clientX - t0.x, t.clientY - t0.y);
+          if (moved > 12 || Date.now() - t0.at > 600) return;
+          this._lastTouch = Date.now();
+          this._showTip({ target: e.target });
+        },
+        { passive: true }
+      );
       scrollEl.addEventListener("touchstart", (e) => e.stopPropagation(), {
         passive: true,
       });
@@ -756,6 +783,14 @@ class EPGCard extends HTMLElement {
     this._movieBusy[cacheKey] = run;
     run.finally(() => delete this._movieBusy[cacheKey]);
     return run;
+  }
+
+  connectedCallback() {
+    if (this._tip && !this._tip.isConnected) document.body.appendChild(this._tip);
+  }
+
+  disconnectedCallback() {
+    if (this._tip) this._tip.remove();
   }
 
   _esc(s) {
