@@ -115,6 +115,21 @@ class EPGCard extends HTMLElement {
         }
       };
       this.content.addEventListener("mouseover", over);
+      // Touch: een tik toont de tooltip (er is geen hover). De emulatie-
+      // mousedown van de browser verbergt hem weer, dus pas bij 'click' tonen.
+      const hideTip = () => {
+        this._tipProg = null;
+        this._tip.style.display = "none";
+      };
+      this.content.addEventListener("click", (e) => {
+        if (e.pointerType === "mouse") return; // muis gebruikt hover
+        over(e);
+      });
+      this.content.addEventListener("touchstart", hideTip, { passive: true });
+      this._onDocClick = (e) => {
+        if (e.pointerType !== "mouse" && !this.contains(e.target)) hideTip();
+      };
+      document.addEventListener("click", this._onDocClick);
       this.content.addEventListener("mouseleave", () => {
         this._tipProg = null;
         this._tip.style.display = "none";
