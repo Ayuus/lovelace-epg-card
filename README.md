@@ -67,6 +67,7 @@ logos:                  # optional: override logo per channel (name OR entity id
 | `row_height`       | number (px)     | 100     | Height of each channel row. |
 | `hours_per_screen` | number          | 8       | Target number of hours visible across the card width (responsive). |
 | `min_hour_width`   | number (px)     | 80      | Lower bound for the hour width (readability on small screens). |
+| `start_offset_minutes` | number      | 30      | On first render the card scrolls so the left edge is at *now minus this many minutes*. Earlier programmes stay reachable by scrolling left. |
 | `hour_width`       | number (px)     | –       | Fixed width per hour; overrides the responsive sizing. |
 | `logo_size`        | number (px)     | 36      | Maximum logo height. |
 | `strip_prefix`     | string or list  | –       | Prefix(es) removed from channel names in the display. |

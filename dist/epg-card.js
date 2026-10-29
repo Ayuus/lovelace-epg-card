@@ -562,7 +562,15 @@ class EPGCard extends HTMLElement {
         );
         scrollEl.style.maxHeight = `${mh}px`;
       }
-      scrollEl.scrollLeft = savedLeft;
+      // Eerste weergave: beginnen bij (nu - start_offset_minutes); daarna de
+      // door de gebruiker gekozen scrollpositie behouden.
+      const startOffset =
+        this.config.start_offset_minutes !== undefined
+          ? Number(this.config.start_offset_minutes)
+          : 30;
+      scrollEl.scrollLeft = prevScroll
+        ? savedLeft
+        : Math.max(0, toPx(nowMin - startOffset));
       scrollEl.scrollTop = savedTop;
       sync();
     }
