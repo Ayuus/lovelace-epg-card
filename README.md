@@ -11,8 +11,9 @@ This is a customized fork of
 
 - **Today + tomorrow** in one timeline, using the real end times from the
   integration (including programmes that end after midnight).
-- **Timeline range** starts at the whole hour of the currently‑airing programme
-  that started earliest, and ends at the whole hour after the last programme.
+- **Timeline range** starts at the whole hour of the earliest programme with
+  data today (scroll back as far as data is available; on first render the
+  card is scrolled to *now − 30 min*), and ends at the whole hour after the last programme.
 - **Fixed time header** (the hours stay visible at the top) and a **sticky
   channel column** (channel stays visible while scrolling horizontally).
 - **Channel logos**: taken from the integration's `channel_icon` attribute;

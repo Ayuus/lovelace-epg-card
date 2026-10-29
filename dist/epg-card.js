@@ -149,7 +149,7 @@ class EPGCard extends HTMLElement {
     const channelIcons = {};
     const cfgLogos = this.config.logos || {}; // optioneel: naam/entity -> logo-URL
     let maxEndAbs = 0;
-    let earliestCurrentStart = null;
+    let earliestStart = null;
 
     // Vandaag (offset 0) + morgen (offset 1440) samenvoegen; echte eindtijd,
     // einde na middernacht doorrollen.
@@ -181,13 +181,8 @@ class EPGCard extends HTMLElement {
           let endAbs = this._convertTimeToMinutes(end_time) + dayOffset;
           if (endAbs <= startAbs) endAbs += 1440;
           if (endAbs > maxEndAbs) maxEndAbs = endAbs;
-          if (
-            dayOffset === 0 &&
-            startAbs <= nowMin &&
-            nowMin < endAbs &&
-            (earliestCurrentStart === null || startAbs < earliestCurrentStart)
-          ) {
-            earliestCurrentStart = startAbs;
+          if (dayOffset === 0 && (earliestStart === null || startAbs < earliestStart)) {
+            earliestStart = startAbs;
           }
           list.push({
             title: program.title,
@@ -214,8 +209,8 @@ class EPGCard extends HTMLElement {
       );
     });
 
-    // Begin op het hele uur van het als eerste gestarte lopende programma.
-    const anchor = earliestCurrentStart !== null ? earliestCurrentStart : nowMin;
+    // Begin op het hele uur van het vroegste programma waarvan data is.
+    const anchor = earliestStart !== null ? Math.min(earliestStart, nowMin) : nowMin;
     const base = Math.floor(anchor / 60) * 60;
 
     // Einde op het hele uur ná de laatste eindtijd.
