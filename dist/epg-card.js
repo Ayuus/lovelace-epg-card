@@ -1,24 +1,8 @@
-/*
- * Lovelace EPG Card
- * A theme-aware, RTL-ready timeline card for the HomeAssistant-EPG integration.
- * https://github.com/yohaybn/lovelace-epg-card
- */
-
-// In some setups the Lovelace panel element is not registered yet when this
-// module loads. Fall back gracefully so the card itself still works instead
-// of failing with "Custom element doesn't exist".
-const HaPanelLovelace = customElements.get("ha-panel-lovelace");
-const LitElement = HaPanelLovelace
-  ? Object.getPrototypeOf(HaPanelLovelace)
-  : HTMLElement;
-const _templateFallback = (strings, ...values) =>
-  strings.reduce((acc, str, i) => acc + str + (values[i] ?? ""), "");
-const html = LitElement.prototype.html || _templateFallback;
-const css = LitElement.prototype.css || html || _templateFallback;
-
-const DEFAULT_ROW_HEIGHT = 72;
-const DEFAULT_HOUR_WIDTH = 110;
-const MISSING_GRACE_MS = 5000;
+const LitElement = Object.getPrototypeOf(
+  customElements.get("ha-panel-lovelace")
+);
+const html = LitElement.prototype.html;
+const css = LitElement.prototype.css;
 
 class EPGCard extends HTMLElement {
   static getConfigElement() {
@@ -26,33 +10,605 @@ class EPGCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { entities: [], row_height: DEFAULT_ROW_HEIGHT };
+    return { entities: [], row_height: 100 };
   }
 
-  constructor() {
-    super();
-    this.attachShadow({ mode: "open" });
-    this._firstMissingAt = null;
-    this._lastRenderKey = null;
-    this._channelCount = 0;
-  }
+  set hass(hass) {
+    if (!this.content) {
+      this.style.display = "block";
+      this.style.width = "100%";
+      this.content = document.createElement("div");
+      this.content.style.padding = "16px";
+      this.content.style.boxSizing = "border-box";
+      this.appendChild(this.content);
 
-  connectedCallback() {
-    this.shadowRoot.addEventListener("mouseover", (ev) => this._onHover(ev));
-    this.shadowRoot.addEventListener("mouseout", (ev) => this._onHoverOut(ev));
-    this.shadowRoot.addEventListener("focusin", (ev) => this._onHover(ev));
-    this.shadowRoot.addEventListener("focusout", (ev) => this._onHoverOut(ev));
-    this.shadowRoot.addEventListener("keydown", (ev) => {
-      if (ev.key === "Escape") this._hideTooltip();
+      // Gedeelde tooltip die de muis volgt (los element, niet geknipt door scroll)
+      this._tip = document.createElement("div");
+      Object.assign(this._tip.style, {
+        position: "fixed",
+        zIndex: "99999",
+        display: "none",
+        pointerEvents: "none",
+        background: "rgba(0, 0, 0, 0.9)",
+        color: "#fff",
+        padding: "10px 15px",
+        borderRadius: "8px",
+        fontSize: "14px",
+        lineHeight: "1.5",
+        maxWidth: "300px",
+        whiteSpace: "normal",
+        boxShadow: "0 4px 8px rgba(0, 0, 0, 0.2)",
+      });
+      this.appendChild(this._tip);
+
+      // Tooltip via event-delegatie (overleeft herbouw): het vaste kaartje wordt
+      // gecentreerd (fixed) binnen het programma waar de muis op staat, en
+      // geklemd binnen het scherm.
+      const over = (e) => {
+        if (this._drag) {
+          // tijdens muis-slepen geen tooltip
+          this._tip.style.display = "none";
+          this._tipProg = null;
+          return;
+        }
+        const prog = e.target.closest ? e.target.closest(".program") : null;
+        if (prog === this._tipProg) return; // zelfde programma: niets doen
+        this._tipProg = prog;
+        if (!prog) {
+          this._tip.style.display = "none";
+          return;
+        }
+        this._tip.replaceChildren();
+        [prog.dataset.title, prog.dataset.desc, prog.dataset.times].forEach(
+          (t) => {
+            const d = document.createElement("div");
+            d.textContent = t || "";
+            this._tip.appendChild(d);
+          }
+        );
+        this._tip.style.display = "block";
+        const pr = prog.getBoundingClientRect();
+        const tr = this._tip.getBoundingClientRect();
+        let x = pr.left + pr.width / 2 - tr.width / 2; // horizontaal centreren
+        let y = pr.top + pr.height / 2 - tr.height / 2; // verticaal centreren
+        x = Math.max(4, Math.min(x, window.innerWidth - tr.width - 4));
+        y = Math.max(4, Math.min(y, window.innerHeight - tr.height - 4));
+        this._tip.style.left = `${x}px`;
+        this._tip.style.top = `${y}px`;
+      };
+      this.content.addEventListener("mouseover", over);
+      this.content.addEventListener("mouseleave", () => {
+        this._tipProg = null;
+        this._tip.style.display = "none";
+      });
+
+      // Herbouw bij breedte- of vensterwijziging zodat de kaart passend blijft
+      this._ro = new ResizeObserver(() => {
+        const w = this.content.clientWidth;
+        if (w === this._lastWidth) return;
+        this._lastWidth = w;
+        this._sig = null;
+        if (this._hass) this.hass = this._hass;
+      });
+      this._ro.observe(this.content);
+      this._onWinResize = () => {
+        this._sig = null;
+        if (this._hass) this.hass = this._hass;
+      };
+      window.addEventListener("resize", this._onWinResize);
+
+      // Slepen met de muis om te scrollen (touch werkt al native)
+      this._drag = null;
+      this.content.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return; // alleen linkermuisknop
+        const sc = e.target.closest && e.target.closest(".epg-scroll");
+        if (!sc) return;
+        this._drag = {
+          sc,
+          x: e.clientX,
+          y: e.clientY,
+          l: sc.scrollLeft,
+          t: sc.scrollTop,
+        };
+        sc.style.cursor = "grabbing";
+        this._tip.style.display = "none";
+        this._tipProg = null;
+      });
+      window.addEventListener("mousemove", (e) => {
+        const d = this._drag;
+        if (!d) return;
+        d.sc.scrollLeft = d.l - (e.clientX - d.x);
+        d.sc.scrollTop = d.t - (e.clientY - d.y);
+        e.preventDefault(); // geen tekst-/afbeeldingselectie tijdens slepen
+      });
+      window.addEventListener("mouseup", () => {
+        if (!this._drag) return;
+        this._drag.sc.style.cursor = "";
+        this._drag = null;
+      });
+    }
+    this._hass = hass;
+
+    const entityIds = this.config.entities;
+    const row_height = this.config.row_height || 100;
+    const CHANNEL_WIDTH = 120; // px, vaste kanaalnaam-kolom
+    const HEADER_HEIGHT = 24; // px, vaste tijdheader
+    const LOGO_SIZE = this.config.logo_size || 36; // px, max. logo-hoogte
+
+    if (!entityIds || !Array.isArray(entityIds) || entityIds.length === 0) {
+      this.content.innerHTML = `<b>Error:</b> No entities configured.`;
+      return;
+    }
+
+    const nowMin = (() => {
+      const t = new Date();
+      return t.getHours() * 60 + t.getMinutes();
+    })();
+
+    const epgData = {};
+    const channelIcons = {};
+    const cfgLogos = this.config.logos || {}; // optioneel: naam/entity -> logo-URL
+    let maxEndAbs = 0;
+    let earliestCurrentStart = null;
+
+    // Vandaag (offset 0) + morgen (offset 1440) samenvoegen; echte eindtijd,
+    // einde na middernacht doorrollen.
+    entityIds.forEach((entityId) => {
+      const state = hass.states[entityId];
+      if (!state) {
+        this.content.innerHTML = `<b>Error:</b> Entity ${entityId} not found.`;
+        return;
+      }
+      const name = state.attributes.friendly_name || entityId;
+      let icon =
+        cfgLogos[name] ||
+        cfgLogos[entityId] ||
+        state.attributes.channel_icon ||
+        state.attributes.entity_picture ||
+        null;
+      // Generieke open-epg placeholder telt niet als logo -> dan de naam tonen
+      if (icon && /open-epg\.com\/1700\.png/i.test(icon)) icon = null;
+      channelIcons[name] = icon;
+      const list = [];
+      const addDay = (programs, dayOffset) => {
+        if (!programs) return;
+        const keys = Object.keys(programs);
+        keys.forEach((start_time) => {
+          const program = programs[start_time];
+          const end_time =
+            program.end || this._calculateEndTime(start_time, keys);
+          const startAbs = this._convertTimeToMinutes(start_time) + dayOffset;
+          let endAbs = this._convertTimeToMinutes(end_time) + dayOffset;
+          if (endAbs <= startAbs) endAbs += 1440;
+          if (endAbs > maxEndAbs) maxEndAbs = endAbs;
+          if (
+            dayOffset === 0 &&
+            startAbs <= nowMin &&
+            nowMin < endAbs &&
+            (earliestCurrentStart === null || startAbs < earliestCurrentStart)
+          ) {
+            earliestCurrentStart = startAbs;
+          }
+          list.push({
+            title: program.title,
+            desc: program.desc,
+            start: start_time,
+            end: end_time,
+            startAbs: startAbs,
+            endAbs: endAbs,
+          });
+        });
+      };
+      addDay(state.attributes.today, 0);
+      addDay(state.attributes.tomorrow, 1440);
+      epgData[name] = list;
     });
-    // The tooltip is viewport-positioned; hide it when anything scrolls so it
-    // never floats detached from its program (issue #7).
-    this._onWindowScroll = () => this._hideTooltip();
-    window.addEventListener("scroll", this._onWindowScroll, true);
+
+    const channels = Object.keys(epgData);
+    const hasTomorrow = entityIds.some((id) => {
+      const st = hass.states[id];
+      return (
+        st &&
+        st.attributes.tomorrow &&
+        Object.keys(st.attributes.tomorrow).length > 0
+      );
+    });
+
+    // Begin op het hele uur van het als eerste gestarte lopende programma.
+    const anchor = earliestCurrentStart !== null ? earliestCurrentStart : nowMin;
+    const base = Math.floor(anchor / 60) * 60;
+
+    // Einde op het hele uur ná de laatste eindtijd.
+    if (maxEndAbs < base + 60) maxEndAbs = base + 60;
+    let endMinutes = Math.ceil(maxEndAbs / 60) * 60;
+    if (endMinutes === maxEndAbs) endMinutes += 60;
+
+    const totalHours = (endMinutes - base) / 60;
+
+    // Uur-breedte: standaard responsief (schaalt mee met de schermbreedte),
+    // tenzij een vaste hour_width is opgegeven. hours_per_screen = hoeveel uren
+    // er ongeveer in de kaartbreedte passen.
+    const avail = (this.content.clientWidth || 0) - 32 - CHANNEL_WIDTH;
+    let HOUR_WIDTH;
+    if (this.config.hour_width) {
+      HOUR_WIDTH = this.config.hour_width; // vaste override
+    } else {
+      const hps = this.config.hours_per_screen || 8;
+      const minHW = this.config.min_hour_width || 80; // ondergrens (leesbaarheid)
+      HOUR_WIDTH = avail > 0 ? Math.max(minHW, avail / hps) : minHW;
+    }
+    // Weinig uren: minstens de kaartbreedte vullen (geen lege ruimte rechts).
+    if (avail > 0) {
+      const fill = avail / totalHours;
+      if (fill > HOUR_WIDTH) HOUR_WIDTH = fill;
+    }
+
+    const timesWidth = totalHours * HOUR_WIDTH;
+    const innerWidth = CHANNEL_WIDTH + timesWidth;
+    const toPx = (absMin) => ((absMin - base) / 60) * HOUR_WIDTH;
+
+    const nowOffsetPx = toPx(nowMin);
+    const nowLineLeft = CHANNEL_WIDTH + nowOffsetPx;
+    const pastWidthPx = nowOffsetPx;
+
+    const dayDividerLeft =
+      hasTomorrow && 1440 > base && 1440 < endMinutes
+        ? CHANNEL_WIDTH + toPx(1440)
+        : null;
+
+    const timeline = [];
+    for (let m = base; m <= endMinutes; m += 60) {
+      timeline.push({
+        label: `${(Math.floor(m / 60) % 24).toString().padStart(2, "0")}:00`,
+        left: toPx(m),
+      });
+    }
+
+    // Alleen herbouwen bij echte wijziging; anders enkel de nu-lijn bijwerken.
+    const signature = JSON.stringify({
+      epgData,
+      channelIcons,
+      stripPrefix: this.config.strip_prefix || null,
+      base,
+      endMinutes,
+      row_height,
+      HOUR_WIDTH,
+      logoSize: LOGO_SIZE,
+    });
+    if (this._sig === signature && this.content.querySelector(".epg-scroll")) {
+      const nl = this.content.querySelector(".now-line");
+      if (nl) nl.style.left = `${nowLineLeft}px`;
+      this.content
+        .querySelectorAll(".past")
+        .forEach((el) => (el.style.width = `${pastWidthPx}px`));
+      return;
+    }
+    this._sig = signature;
+
+    const prevScroll = this.content.querySelector(".epg-scroll");
+    const savedLeft = prevScroll ? prevScroll.scrollLeft : 0;
+    const savedTop = prevScroll ? prevScroll.scrollTop : 0;
+
+    this.content.innerHTML = `
+        <style>
+            .epg-card {
+                font-family: inherit; /* standaard HA-lettertype */
+                width: 100%;
+            }
+            /* Vaste tijdheader BUITEN het scrollvlak: uren blijven altijd bovenin. */
+            .epg-head {
+                display: flex;
+                height: ${HEADER_HEIGHT}px;
+                overflow: hidden;
+                border-bottom: 1px solid var(--divider-color, rgba(127,127,127,0.4));
+                background-color: var(--ha-card-background, var(--card-background-color, #1c1c1c));
+            }
+            .corner {
+                flex: 0 0 auto;
+                width: ${CHANNEL_WIDTH}px;
+                background-color: var(--ha-card-background, var(--card-background-color, #1c1c1c));
+            }
+            .head-scroll {
+                flex: 1 1 auto;
+                overflow: hidden;
+                position: relative;
+            }
+            .times {
+                position: relative;
+                width: ${timesWidth}px;
+                height: ${HEADER_HEIGHT}px;
+                will-change: transform;
+            }
+            .time {
+                position: absolute;
+                top: 0;
+                height: ${HEADER_HEIGHT}px;
+                font-weight: bold;
+                font-size: 14px;
+                white-space: nowrap;
+            }
+            /* Alleen dit vlak scrollt (max-height wordt via JS gezet) */
+            .epg-scroll {
+                width: 100%;
+                overflow: auto;
+                box-sizing: border-box;
+                overscroll-behavior: contain;
+                -webkit-overflow-scrolling: touch;
+                touch-action: pan-x pan-y;
+                cursor: grab;
+                user-select: none;
+                -webkit-user-select: none;
+            }
+            .epg-inner {
+                position: relative;
+                width: ${innerWidth}px;
+            }
+            .now-line {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                left: ${nowLineLeft}px;
+                width: 2px;
+                background-color: var(--primary-text-color);
+                z-index: 400;
+                pointer-events: none;
+            }
+            .day-divider {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                width: 0;
+                border-left: 2px dashed var(--primary-text-color);
+                opacity: 0.6;
+                z-index: 400;
+                pointer-events: none;
+            }
+            .channel-row {
+                display: flex;
+                align-items: center;
+                height: ${row_height}px;
+                margin-bottom: 5px;
+            }
+            .channel-name {
+                position: sticky;
+                left: 0;
+                width: ${CHANNEL_WIDTH}px;
+                min-width: ${CHANNEL_WIDTH}px;
+                height: ${row_height}px;
+                z-index: 500;
+                background-color: var(--ha-card-background, var(--card-background-color, #1c1c1c));
+                font-weight: bold;
+                text-align: center;
+                padding: 4px;
+                box-sizing: border-box;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .chan-logo {
+                max-width: ${CHANNEL_WIDTH - 24}px;
+                max-height: ${LOGO_SIZE}px;
+                object-fit: contain;
+                -webkit-user-drag: none;
+            }
+            .programs {
+                position: relative;
+                width: ${timesWidth}px;
+                height: ${row_height}px;
+            }
+            .fill {
+                position: absolute;
+                top: 0;
+                height: ${row_height}px;
+                background-color: rgba(30, 70, 120, 0.45);
+                border-radius: 4px;
+                z-index: 0;
+                pointer-events: none;
+            }
+            .program {
+                position: absolute;
+                height: ${row_height}px;
+                background-color: rgba(0, 123, 255, 0.6);
+                color: white;
+                box-sizing: border-box;
+                border-radius: 4px;
+                border-right: 1px solid #333;
+                padding: 5px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                overflow: hidden;
+                white-space: normal;
+                word-wrap: break-word;
+                cursor: pointer;
+                font-size: 14px;
+            }
+            .prog-title {
+                display: -webkit-box;
+                -webkit-line-clamp: 2;       /* max 2 regels */
+                line-clamp: 2;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
+                text-overflow: ellipsis;     /* ... aan het einde */
+                word-break: break-word;
+                text-align: center;
+                width: 100%;                 /* begrens op programmabreedte */
+                max-width: 100%;
+            }
+            .program:hover {
+                background-color: #0056b3;
+            }
+        </style>
+
+        <div class="epg-card">
+          <div class="epg-head">
+            <div class="corner"></div>
+            <div class="head-scroll">
+              <div class="times">
+                ${timeline
+                  .map(
+                    (t) =>
+                      `<div class="time" style="left: ${t.left}px;">${t.label}</div>`
+                  )
+                  .join("")}
+              </div>
+            </div>
+          </div>
+
+          <div class="epg-scroll">
+            <div class="epg-inner">
+                <div class="now-line"></div>
+                ${
+                  dayDividerLeft !== null
+                    ? `<div class="day-divider" style="left: ${dayDividerLeft}px;"></div>`
+                    : ""
+                }
+
+                ${channels
+                  .map(
+                    (channel) => `
+                        <div class="channel-row">
+                            <div class="channel-name">${
+                              channelIcons[channel]
+                                ? `<img class="chan-logo" src="${this._esc(
+                                    channelIcons[channel]
+                                  )}" alt="${this._esc(
+                                    this._chanName(channel)
+                                  )}" title="${this._esc(
+                                    this._chanName(channel)
+                                  )}" data-name="${this._esc(
+                                    this._chanName(channel)
+                                  )}" />`
+                                : this._esc(this._chanName(channel))
+                            }</div>
+                            <div class="programs">
+                                <div class="fill past" style="left: 0; width: ${pastWidthPx}px;"></div>
+                                ${(() => {
+                                  let chEnd = base;
+                                  epgData[channel].forEach((p) => {
+                                    const pe = Math.min(p.endAbs, endMinutes);
+                                    if (pe > chEnd) chEnd = pe;
+                                  });
+                                  const rl = toPx(chEnd);
+                                  const rw = timesWidth - rl;
+                                  return rw > 0.5
+                                    ? `<div class="fill future" style="left: ${rl}px; width: ${rw}px;"></div>`
+                                    : "";
+                                })()}
+                                ${epgData[channel]
+                                  .map((program) => {
+                                    const s = Math.min(
+                                      Math.max(program.startAbs, base),
+                                      endMinutes
+                                    );
+                                    const e = Math.min(
+                                      Math.max(program.endAbs, base),
+                                      endMinutes
+                                    );
+                                    const left = toPx(s);
+                                    const width = ((e - s) / 60) * HOUR_WIDTH;
+                                    if (width <= 0) return "";
+                                    return `
+                                        <div class="program"
+                                            style="left: ${left}px; width: ${width}px;"
+                                            data-title="${this._esc(program.title)}"
+                                            data-desc="${this._esc(program.desc)}"
+                                            data-times="${this._esc(program.start)}-${this._esc(program.end)}">
+                                            <span class="prog-title">${this._esc(
+                                              program.title
+                                            )}</span>
+                                        </div>
+                                    `;
+                                  })
+                                  .join("")}
+                            </div>
+                        </div>`
+                  )
+                  .join("")}
+            </div>
+          </div>
+        </div>
+        `;
+
+    // Horizontale sync van de vaste header + hoogte begrenzen zodat de
+    // scrollbars ín de kaart zitten; scrollpositie herstellen.
+    const scrollEl = this.content.querySelector(".epg-scroll");
+    const headTimes = this.content.querySelector(".times");
+    if (scrollEl && headTimes) {
+      const sync = () => {
+        headTimes.style.transform = `translateX(${-scrollEl.scrollLeft}px)`;
+      };
+      scrollEl.addEventListener("scroll", sync, { passive: true });
+      // Voorkom dat de HA-app horizontale swipes onderschept (view-navigatie)
+      scrollEl.addEventListener("touchstart", (e) => e.stopPropagation(), {
+        passive: true,
+      });
+      scrollEl.addEventListener("touchmove", (e) => e.stopPropagation(), {
+        passive: true,
+      });
+      // Ondermarge zodat de kaart binnen het scherm past en de pagina zelf
+      // geen tweede scrollbar krijgt.
+      const BOTTOM_MARGIN = 12;
+      const top = scrollEl.getBoundingClientRect().top;
+      const availH = window.innerHeight - top - BOTTOM_MARGIN;
+      scrollEl.style.maxHeight = `${availH > 140 ? availH : 300}px`;
+      // Corrigeer resterende overschrijding van de hele kaart (voorkomt een
+      // tweede, pagina-scrollbar naast die van de kaart).
+      const overshoot = this.getBoundingClientRect().bottom - window.innerHeight;
+      if (overshoot > 0) {
+        const mh = Math.max(
+          140,
+          parseFloat(scrollEl.style.maxHeight) - overshoot - BOTTOM_MARGIN
+        );
+        scrollEl.style.maxHeight = `${mh}px`;
+      }
+      scrollEl.scrollLeft = savedLeft;
+      scrollEl.scrollTop = savedTop;
+      sync();
+    }
+
+    // Logo dat niet laadt: terugvallen op de zendernaam
+    this.content.querySelectorAll(".chan-logo").forEach((img) => {
+      img.addEventListener("error", () => {
+        img.replaceWith(document.createTextNode(img.dataset.name || ""));
+      });
+    });
   }
 
-  disconnectedCallback() {
-    window.removeEventListener("scroll", this._onWindowScroll, true);
+  // Verwijder geconfigureerde prefix(en) van de zendernaam voor de weergave.
+  _chanName(name) {
+    const p = this.config.strip_prefix;
+    if (!p) return name;
+    const arr = Array.isArray(p) ? p : [p];
+    for (const pre of arr) {
+      if (pre && name.startsWith(pre)) {
+        const short = name.slice(pre.length).replace(/^[\s:_-]+/, "").trim();
+        return short || name;
+      }
+    }
+    return name;
+  }
+
+  _esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  _convertTimeToMinutes(time) {
+    const [hours, minutes] = time.split(":").map((t) => parseInt(t, 10));
+    return hours * 60 + minutes;
+  }
+
+  _calculateEndTime(current, keys) {
+    const times = keys.sort();
+    const index = times.indexOf(current);
+    if (index === -1 || index === times.length - 1) {
+      return "24:00";
+    }
+    return times[index + 1];
   }
 
   setConfig(config) {
@@ -64,732 +620,10 @@ class EPGCard extends HTMLElement {
       throw new Error("You need to define at least one entity.");
     }
     this.config = config;
-    this._lastRenderKey = null;
   }
 
   getCardSize() {
-    return Math.min(Math.max(this._channelCount + 1, 3), 12);
-  }
-
-  set hass(hass) {
-    this._hass = hass;
-    this._render();
-  }
-
-  /* ---------------- data ---------------- */
-
-  _collectChannels() {
-    const channels = [];
-    const missing = [];
-    for (const entityId of this.config.entities) {
-      const state = this._hass.states[entityId];
-      if (!state) {
-        missing.push(entityId);
-        continue;
-      }
-      const unavailable = state.state === "unavailable" || state.state === "unknown";
-      const programs = [];
-      const today = state.attributes.today || {};
-      const starts = Object.keys(today).sort();
-      for (const start of starts) {
-        programs.push(this._normalizeProgram(today[start], start, false, starts));
-      }
-      // The integration exposes tomorrow's schedule when its full_schedule
-      // option is enabled; append those programs after midnight.
-      const tomorrow = state.attributes.tomorrow || {};
-      const tomorrowStarts = Object.keys(tomorrow).sort();
-      for (const start of tomorrowStarts) {
-        programs.push(
-          this._normalizeProgram(tomorrow[start], start, true, tomorrowStarts)
-        );
-      }
-      channels.push({
-        entityId,
-        name:
-          state.attributes.channel_display_name ||
-          state.attributes.friendly_name ||
-          entityId,
-        icon: state.attributes.channel_icon || null,
-        programs: programs.filter(Boolean),
-        unavailable,
-      });
-    }
-    return { channels, missing };
-  }
-
-  // Converts HH:MM strings into absolute minutes so programs that cross
-  // midnight (end smaller than start) and tomorrow's schedule line up after
-  // today's on one continuous timeline.
-  _normalizeProgram(program, start, isTomorrow, siblingStarts) {
-    const now = this._nowMinutes();
-    const end = program.end || this._calculateEndTime(start, siblingStarts);
-    const dayOffset = isTomorrow ? 1440 : 0;
-    const rawStart = this._convertTimeToMinutes(start) + dayOffset;
-    let endAbs = this._convertTimeToMinutes(end) + dayOffset;
-    if (endAbs <= rawStart) endAbs += 1440;
-    let startAbs = rawStart;
-    if (!isTomorrow && startAbs < now) {
-      if (endAbs <= now) return null; // already over
-      startAbs = now; // airing right now: clamp to the left edge
-    }
-    return {
-      title: program.title || "",
-      desc: program.desc || "",
-      subTitle: program.sub_title || "",
-      start,
-      end,
-      startAbs,
-      endAbs,
-    };
-  }
-
-  _windowEnd(channels) {
-    let maxEnd = 1440;
-    for (const channel of channels) {
-      for (const program of channel.programs) {
-        if (program.endAbs > maxEnd) maxEnd = program.endAbs;
-      }
-    }
-    return maxEnd;
-  }
-
-  _renderKey(channels, missing) {
-    const minuteStamp = Math.floor(Date.now() / 60000);
-    return JSON.stringify([
-      minuteStamp,
-      missing,
-      this.config.row_height || null,
-      this.config.title || null,
-      channels.map((c) => [c.entityId, c.name, c.icon, c.unavailable, c.programs]),
-    ]);
-  }
-
-  /* ---------------- render ---------------- */
-
-  _render() {
-    if (!this.config) return;
-    const { channels, missing } = this._collectChannels();
-    const allMissing = channels.length === 0 && missing.length > 0;
-    const pastGrace =
-      allMissing &&
-      this._firstMissingAt !== null &&
-      Date.now() - this._firstMissingAt >= MISSING_GRACE_MS;
-    const phase = allMissing ? (pastGrace ? "error" : "loading") : "guide";
-
-    const renderKey = phase + this._renderKey(channels, missing);
-    if (renderKey === this._lastRenderKey) return;
-    this._lastRenderKey = renderKey;
-    this._hideTooltip();
-
-    const rowHeight = Number(this.config.row_height) || DEFAULT_ROW_HEIGHT;
-    const title = this.config.title;
-
-    if (allMissing) {
-      if (this._firstMissingAt === null) {
-        this._firstMissingAt = Date.now();
-      }
-      if (!pastGrace) {
-        this._channelCount = 3;
-        this._setContent(this._skeletonTemplate(rowHeight), title);
-        this._scheduleRetry();
-        return;
-      }
-      this._setContent(
-        this._messageTemplate(
-          "error",
-          "Entities not found",
-          missing
-            .map((id) => `${id} - check that it exists and the EPG integration is configured.`)
-            .join(" ")
-        ),
-        title
-      );
-      return;
-    }
-    this._firstMissingAt = null;
-
-    this._channelCount = channels.length;
-    this._setContent(
-      this._guideTemplate(channels, missing, rowHeight, this._windowEnd(channels)),
-      title
-    );
-  }
-
-  _scheduleRetry() {
-    clearTimeout(this._retryTimer);
-    this._retryTimer = setTimeout(() => {
-      if (this._hass) this._render();
-    }, MISSING_GRACE_MS);
-  }
-
-  _setContent(bodyTemplate, title) {
-    const oldScroll = this.shadowRoot.querySelector(".epg-scroll");
-    const scrollLeft = oldScroll ? oldScroll.scrollLeft : 0;
-    this.shadowRoot.innerHTML = `
-      ${this._styles()}
-      <ha-card>
-        ${title ? `<div class="card-header">${this._escape(title)}</div>` : ""}
-        ${bodyTemplate}
-        <div class="epg-tooltip" role="tooltip" hidden></div>
-      </ha-card>
-    `;
-    const newScroll = this.shadowRoot.querySelector(".epg-scroll");
-    if (newScroll) newScroll.scrollLeft = scrollLeft;
-  }
-
-  _styles() {
-    return `
-    <style>
-      :host {
-        display: block;
-      }
-      ha-card {
-        overflow: hidden;
-      }
-      .card-header {
-        padding: 16px 16px 4px;
-        font-family: var(--ha-font-family-heading, inherit);
-        font-size: var(--ha-font-size-xl, 20px);
-        font-weight: var(--ha-font-weight-medium, 500);
-        color: var(--primary-text-color);
-      }
-      .epg-scroll {
-        overflow-x: auto;
-        overscroll-behavior-x: contain;
-        padding: 12px 16px 16px;
-        scrollbar-width: thin;
-      }
-      .epg-inner {
-        min-width: 100%;
-      }
-      .epg-row {
-        display: flex;
-        align-items: stretch;
-      }
-      .epg-row + .epg-row {
-        margin-top: 6px;
-      }
-      .timeline-row {
-        margin-bottom: 8px;
-      }
-      .channel-cell {
-        flex: 0 0 var(--epg-channel-width, 120px);
-        position: sticky;
-        inset-inline-start: 0;
-        z-index: 2;
-        background: var(--card-background-color, white);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
-        padding: 4px 8px;
-        text-align: center;
-      }
-
-      .channel-icon {
-        width: 32px;
-        height: 32px;
-        border-radius: 8px;
-        object-fit: contain;
-        background: var(--secondary-background-color);
-      }
-      .channel-fallback {
-        width: 32px;
-        height: 32px;
-        border-radius: 8px;
-        background: var(--secondary-background-color);
-        color: var(--secondary-text-color);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-weight: 600;
-        font-size: 14px;
-      }
-      .channel-name {
-        font-size: 12px;
-        line-height: 1.2;
-        color: var(--primary-text-color);
-        max-width: 100%;
-        overflow: hidden;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow-wrap: anywhere;
-      }
-      .track-wrap {
-        position: relative;
-        flex: 1 1 auto;
-        min-width: 0;
-      }
-      .timeline-track {
-        position: relative;
-        height: 22px;
-        border-bottom: 1px solid var(--divider-color, #e0e0e0);
-      }
-      .hour-tick {
-        position: absolute;
-        inset-inline-start: var(--pos);
-        transform: translateX(-50%);
-        font-size: 11px;
-        color: var(--secondary-text-color);
-        white-space: nowrap;
-        top: 0;
-      }
-      .hour-tick.edge-start {
-        transform: none;
-      }
-      .hour-tick.edge-end {
-        transform: translateX(-100%);
-      }
-      :host-context([dir="rtl"]) .hour-tick.edge-end {
-        transform: translateX(100%);
-      }
-      .hour-tick.half {
-        opacity: 0.55;
-        font-size: 10px;
-      }
-      .hour-tick::after {
-        content: "";
-        position: absolute;
-        top: 100%;
-        inset-inline-start: 50%;
-        width: 1px;
-        height: 4px;
-        background: var(--divider-color, #e0e0e0);
-      }
-      .programs-track {
-        position: relative;
-        border-radius: var(--epg-program-border-radius, 10px);
-      }
-      .program {
-        position: absolute;
-        inset-inline-start: var(--pos);
-        width: var(--width);
-        top: 0;
-        bottom: 0;
-        box-sizing: border-box;
-        background: var(--epg-program-background, var(--secondary-background-color));
-        color: var(--primary-text-color);
-        border: 1px solid var(--divider-color, #e0e0e0);
-        border-radius: var(--epg-program-border-radius, 10px);
-        padding: 6px 8px;
-        overflow: hidden;
-        cursor: default;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        gap: 2px;
-        transition: box-shadow 120ms ease, border-color 120ms ease;
-      }
-      .program:hover,
-      .program:focus-visible {
-        border-color: var(--primary-color);
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-        outline: none;
-        z-index: 3;
-      }
-      .program.current {
-        background: var(--epg-current-background, var(--primary-color));
-        color: var(--epg-current-color, var(--text-primary-color, #fff));
-        border-color: transparent;
-      }
-      .program-title {
-        font-size: 13px;
-        font-weight: 500;
-        line-height: 1.25;
-        overflow: hidden;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow-wrap: anywhere;
-      }
-      .program-time {
-        font-size: 11px;
-        opacity: 0.75;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .program.narrow .program-time {
-        display: none;
-      }
-      .program-progress {
-        position: absolute;
-        inset-inline-start: 0;
-        bottom: 0;
-        height: 3px;
-        width: var(--progress);
-        background: currentColor;
-        opacity: 0.55;
-        border-radius: 0 2px 2px 0;
-      }
-      .programs-track.empty {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px dashed var(--divider-color, #e0e0e0);
-        border-radius: var(--epg-program-border-radius, 10px);
-        color: var(--secondary-text-color);
-        font-size: 12px;
-      }
-      .programs-track.empty span {
-        position: sticky;
-        inset-inline-start: 16px;
-        inset-inline-end: 16px;
-      }
-      .channel-cell.unavailable .channel-name {
-        color: var(--secondary-text-color);
-      }
-      .banner {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin: 0 16px 8px;
-        padding: 8px 12px;
-        border-radius: 8px;
-        font-size: 12px;
-        background: color-mix(in srgb, var(--warning-color, #ffc107) 18%, transparent);
-        color: var(--primary-text-color);
-      }
-      .banner ha-icon {
-        color: var(--warning-color, #ffc107);
-        flex: 0 0 auto;
-      }
-      .state-block {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 8px;
-        padding: 32px 16px;
-        text-align: center;
-        color: var(--secondary-text-color);
-      }
-      .state-block ha-icon {
-        --mdc-icon-size: 40px;
-      }
-      .state-block.error ha-icon {
-        color: var(--error-color, #db4437);
-      }
-      .state-title {
-        font-size: 15px;
-        font-weight: 500;
-        color: var(--primary-text-color);
-      }
-      .state-text {
-        font-size: 13px;
-        max-width: 480px;
-      }
-      .skeleton-row {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-        margin-bottom: 8px;
-      }
-      .skeleton-block {
-        border-radius: 10px;
-        background: linear-gradient(
-          90deg,
-          var(--secondary-background-color) 25%,
-          var(--divider-color, #e0e0e0) 50%,
-          var(--secondary-background-color) 75%
-        );
-        background-size: 200% 100%;
-        animation: epg-shimmer 1.4s linear infinite;
-      }
-      @keyframes epg-shimmer {
-        from { background-position: 200% 0; }
-        to { background-position: -200% 0; }
-      }
-      .epg-tooltip {
-        position: fixed;
-        z-index: 1000;
-        max-width: min(320px, 80vw);
-        background: var(--card-background-color, #1c1c1c);
-        color: var(--primary-text-color, #fff);
-        border: 1px solid var(--divider-color, transparent);
-        border-radius: 10px;
-        padding: 10px 12px;
-        font-size: 13px;
-        line-height: 1.45;
-        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-        pointer-events: none;
-      }
-      .tooltip-title {
-        font-weight: 600;
-        margin-bottom: 2px;
-      }
-      .tooltip-time {
-        color: var(--secondary-text-color);
-        font-size: 12px;
-        margin-bottom: 6px;
-      }
-      .tooltip-desc {
-        overflow-wrap: anywhere;
-      }
-      @media (max-width: 600px) {
-        .epg-scroll {
-          padding: 8px 8px 12px;
-        }
-        .channel-cell {
-          flex-basis: var(--epg-channel-width, 76px);
-        }
-        .channel-icon,
-        .channel-fallback {
-          width: 24px;
-          height: 24px;
-          border-radius: 6px;
-          font-size: 11px;
-        }
-        .channel-name {
-          font-size: 11px;
-        }
-        .program {
-          padding: 4px 6px;
-        }
-        .program-title {
-          font-size: 12px;
-        }
-      }
-      @media (prefers-reduced-motion: reduce) {
-        .skeleton-block {
-          animation: none;
-        }
-        .program {
-          transition: none;
-        }
-      }
-    </style>`;
-  }
-
-  _skeletonTemplate(rowHeight) {
-    const rows = [0, 1, 2]
-      .map(
-        () => `
-        <div class="skeleton-row">
-          <div class="skeleton-block" style="width: var(--epg-channel-width, 120px); height: ${rowHeight}px;"></div>
-          <div class="skeleton-block" style="flex: 1; height: ${rowHeight}px;"></div>
-        </div>`
-      )
-      .join("");
-    return `<div class="epg-scroll" aria-busy="true" aria-label="Loading TV guide">${rows}</div>`;
-  }
-
-  _messageTemplate(kind, titleText, bodyText) {
-    const icon =
-      kind === "error" ? "mdi:alert-circle-outline" : "mdi:information-outline";
-    return `
-      <div class="state-block ${kind}" role="${kind === "error" ? "alert" : "status"}">
-        <ha-icon icon="${icon}"></ha-icon>
-        <div class="state-title">${this._escape(titleText)}</div>
-        <div class="state-text">${this._escape(bodyText)}</div>
-      </div>`;
-  }
-
-  _guideTemplate(channels, missing, rowHeight, windowEnd) {
-    const { ticks, trackMinWidth } = this._timelineTicks(windowEnd);
-    const warning = missing.length
-      ? `<div class="banner"><ha-icon icon="mdi:alert-outline"></ha-icon><span>${this._escape(
-          `Some entities were not found: ${missing.join(", ")}`
-        )}</span></div>`
-      : "";
-
-    const rows = channels
-      .map((channel) => {
-        const programs = channel.programs
-          .map((program) => this._programTemplate(program, rowHeight, windowEnd))
-          .join("");
-        const track = channel.unavailable
-          ? `<div class="programs-track empty" style="height: ${rowHeight}px;"><span>Unavailable</span></div>`
-          : channel.programs.length === 0
-            ? `<div class="programs-track empty" style="height: ${rowHeight}px;"><span>No programs scheduled</span></div>`
-            : `<div class="programs-track" style="height: ${rowHeight}px;">${programs}</div>`;
-        return `
-          <div class="epg-row">
-            <div class="channel-cell ${channel.unavailable ? "unavailable" : ""}" title="${this._escape(channel.name)}">
-              ${this._channelIconTemplate(channel)}
-              <div class="channel-name">${this._escape(channel.name)}</div>
-            </div>
-            <div class="track-wrap">${track}</div>
-          </div>`;
-      })
-      .join("");
-
-    return `
-      ${warning}
-      <div class="epg-scroll">
-        <div class="epg-inner" style="min-width: ${trackMinWidth}px;">
-          <div class="epg-row timeline-row" aria-hidden="true">
-            <div class="channel-cell"></div>
-            <div class="track-wrap">
-              <div class="timeline-track">${ticks}</div>
-            </div>
-          </div>
-          ${rows}
-        </div>
-      </div>`;
-  }
-
-  _channelIconTemplate(channel) {
-    if (channel.icon) {
-      return `<img class="channel-icon" src="${this._escape(channel.icon)}" alt=""
-        onerror="this.outerHTML=this.dataset.fallback" data-fallback='${this._fallbackIconHtml(channel.name)}'>`;
-    }
-    return this._fallbackIconHtml(channel.name);
-  }
-
-  _fallbackIconHtml(name) {
-    const initials = (name || "?")
-      .split(/\s+/)
-      .map((w) => w[0])
-      .slice(0, 2)
-      .join("")
-      .toUpperCase();
-    return `<div class="channel-fallback">${this._escape(initials)}</div>`;
-  }
-
-  _programTemplate(program, rowHeight, windowEnd) {
-    const now = this._nowMinutes();
-    const span = Math.max(windowEnd - now, 1);
-    const pos = ((program.startAbs - now) / span) * 100;
-    const width = ((program.endAbs - program.startAbs) / span) * 100;
-    if (width <= 0) return "";
-    const isCurrent = program.startAbs <= now && now < program.endAbs;
-    const progress = isCurrent
-      ? Math.min(
-          100,
-          Math.max(
-            0,
-            ((now - program.startAbs) /
-              Math.max(program.endAbs - program.startAbs, 1)) *
-              100
-          )
-        )
-      : 0;
-    const narrow = width < 9;
-    const label = `${program.title}, ${program.start} to ${program.end}${
-      program.desc ? `. ${program.desc}` : ""
-    }`;
-    return `
-      <div class="program ${isCurrent ? "current" : ""} ${narrow ? "narrow" : ""}"
-           style="--pos: ${pos}%; --width: ${width}%;"
-           tabindex="0"
-           data-title="${this._escape(program.title)}"
-           data-time="${this._escape(`${program.start} - ${program.end}`)}"
-           data-desc="${this._escape([program.subTitle, program.desc].filter(Boolean).join(" | "))}"
-           aria-label="${this._escape(label)}">
-        <div class="program-title">${this._escape(program.title)}</div>
-        <div class="program-time">${this._escape(program.start)} - ${this._escape(program.end)}</div>
-        ${isCurrent ? `<div class="program-progress" style="--progress: ${progress}%" aria-hidden="true"></div>` : ""}
-      </div>`;
-  }
-
-  /* ---------------- tooltip ---------------- */
-
-  _onHover(ev) {
-    const program = ev.target.closest && ev.target.closest(".program");
-    if (!program) return;
-    const tooltip = this.shadowRoot.querySelector(".epg-tooltip");
-    if (!tooltip) return;
-    tooltip.innerHTML = `
-      <div class="tooltip-title"></div>
-      <div class="tooltip-time"></div>
-      <div class="tooltip-desc"></div>`;
-    tooltip.querySelector(".tooltip-title").textContent = program.dataset.title;
-    tooltip.querySelector(".tooltip-time").textContent = program.dataset.time;
-    const descEl = tooltip.querySelector(".tooltip-desc");
-    descEl.textContent = program.dataset.desc;
-    if (!program.dataset.desc) descEl.remove();
-    tooltip.hidden = false;
-    this._positionTooltip(program, tooltip);
-  }
-
-  _onHoverOut(ev) {
-    const program = ev.target.closest && ev.target.closest(".program");
-    if (!program) return;
-    if (ev.type === "mouseout" && program.contains(ev.relatedTarget)) return;
-    this._hideTooltip();
-  }
-
-  _hideTooltip() {
-    const tooltip = this.shadowRoot.querySelector(".epg-tooltip");
-    if (tooltip) tooltip.hidden = true;
-  }
-
-  _positionTooltip(program, tooltip) {
-    const rect = program.getBoundingClientRect();
-    const rtl = getComputedStyle(this).direction === "rtl";
-    const tipRect = tooltip.getBoundingClientRect();
-    const margin = 8;
-    let top = rect.top - tipRect.height - margin;
-    if (top < margin) top = rect.bottom + margin;
-    tooltip.style.top = `${top}px`;
-    if (rtl) {
-      let right = window.innerWidth - rect.right;
-      right = Math.max(margin, Math.min(right, window.innerWidth - tipRect.width - margin));
-      tooltip.style.right = `${right}px`;
-      tooltip.style.left = "auto";
-    } else {
-      let left = rect.left;
-      left = Math.max(margin, Math.min(left, window.innerWidth - tipRect.width - margin));
-      tooltip.style.left = `${left}px`;
-      tooltip.style.right = "auto";
-    }
-  }
-
-  /* ---------------- time helpers ---------------- */
-
-  _nowMinutes() {
-    const now = new Date();
-    return now.getHours() * 60 + now.getMinutes();
-  }
-
-  _timelineTicks(windowEnd) {
-    const now = this._nowMinutes();
-    const span = Math.max(windowEnd - now, 1);
-    const hourWidth =
-      Number(this.config.hour_width) > 0
-        ? Number(this.config.hour_width)
-        : DEFAULT_HOUR_WIDTH;
-    const trackMinWidth = Math.max(320, (span / 60) * hourWidth);
-    const stepMinutes = hourWidth >= 160 ? 30 : 60;
-    const ticks = [];
-    const first = Math.ceil(now / stepMinutes) * stepMinutes;
-    for (let minute = first; minute < windowEnd; minute += stepMinutes) {
-      const clock = minute % 1440;
-      const label = `${Math.floor(clock / 60)
-        .toString()
-        .padStart(2, "0")}:${(clock % 60).toString().padStart(2, "0")}`;
-      const pos = ((minute - now) / span) * 100;
-      const edge = pos < 4 ? " edge-start" : pos > 96 ? " edge-end" : "";
-      const half = minute % 60 !== 0 ? " half" : "";
-      ticks.push(
-        `<div class="hour-tick${edge}${half}" style="--pos: ${pos}%">${label}</div>`
-      );
-    }
-    return { ticks: ticks.join(""), trackMinWidth };
-  }
-
-  _convertTimeToMinutes(time) {
-    const [hours, minutes] = String(time).split(":").map((t) => parseInt(t, 10));
-    return (hours || 0) * 60 + (minutes || 0);
-  }
-
-  _calculateEndTime(current, keys) {
-    const times = [...keys].sort();
-    const index = times.indexOf(current);
-    if (index === -1 || index === times.length - 1) {
-      return "24:00";
-    }
-    return times[index + 1];
-  }
-
-  _escape(value) {
-    return String(value == null ? "" : value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+    return 5;
   }
 }
 
@@ -797,10 +631,7 @@ customElements.define("epg-card", EPGCard);
 
 class EPGCardEditor extends LitElement {
   static get properties() {
-    return {
-      hass: { type: Object },
-      config: { type: Object },
-    };
+    return { hass: { type: Object }, config: { type: Object } };
   }
 
   constructor() {
@@ -836,28 +667,43 @@ class EPGCardEditor extends LitElement {
         .data=${this.config}
         .schema=${[
           {
-            name: "title",
+            name: "row_height",
+            selector: {
+              number: { min: 50, max: 300, unit: "px", default: 100 },
+            },
+            default: 100,
+          },
+          {
+            name: "logo_size",
+            selector: { number: { min: 16, max: 100, unit: "px", default: 36 } },
+          },
+          {
+            name: "hours_per_screen",
+            selector: { number: { min: 3, max: 24, step: 1, default: 8 } },
+          },
+          {
+            name: "min_hour_width",
+            selector: { number: { min: 40, max: 300, unit: "px", default: 80 } },
+          },
+          {
+            name: "hour_width",
+            selector: {
+              number: { min: 40, max: 400, unit: "px" },
+            },
+          },
+          {
+            name: "strip_prefix",
             selector: { text: {} },
+          },
+          {
+            name: "logos",
+            selector: { object: {} },
           },
           {
             name: "entities",
             selector: {
               entity: { domain: "sensor", multiple: true, integration: "epg" },
             },
-          },
-          {
-            name: "row_height",
-            selector: {
-              number: { min: 48, max: 300, unit: "px", default: DEFAULT_ROW_HEIGHT },
-            },
-            default: DEFAULT_ROW_HEIGHT,
-          },
-          {
-            name: "hour_width",
-            selector: {
-              number: { min: 60, max: 400, unit: "px", default: DEFAULT_HOUR_WIDTH },
-            },
-            default: DEFAULT_HOUR_WIDTH,
           },
         ]}
         @value-changed=${this._valueChanged}
@@ -866,13 +712,11 @@ class EPGCardEditor extends LitElement {
   }
 }
 customElements.define("epg-card-editor", EPGCardEditor);
-
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "epg-card",
   name: "EPG Card",
   preview: false,
-  description:
-    "Timeline TV guide for the HomeAssistant-EPG integration, with channel icons, now-playing highlight and full theme support.",
+  description: "A custom card for HomeAssistant-EPG!",
   documentationURL: "https://github.com/yohaybn/lovelace-epg-card",
 });

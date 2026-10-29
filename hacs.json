@@ -1,5 +1,5 @@
 {
-    "name": "EPG Card",
-    "render_readme": true,
-    "filename": "epg-card.js"
+  "name": "Lovelace EPG Card",
+  "render_readme": true,
+  "filename": "epg-card.js"
 }

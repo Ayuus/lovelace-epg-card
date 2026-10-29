@@ -1,102 +1,81 @@
-
-
 # Lovelace EPG Card
 
-This is a custom Lovelace card for Home Assistant that displays Electronic Program Guide (EPG) data. It is designed to work in conjunction with the custom Home Assistant integration available at [https://github.com/yohaybn/HomeAssistant-EPG](https://github.com/yohaybn/HomeAssistant-EPG).  **You must install this integration for the card to function correctly.** The card fetches program information from the sensors provided by this integration and presents it in a user-friendly timeline format.
+A timeline EPG (TV guide) card for Home Assistant, for use with the
+[HomeAssistant-EPG](https://github.com/yohaybn/HomeAssistant-EPG) integration.
+
+This is a customized fork of
+[peno64/lovelace-epg-card](https://github.com/peno64/lovelace-epg-card)
+(itself a fork of [yohaybn/lovelace-epg-card](https://github.com/yohaybn/lovelace-epg-card)).
 
 ## Features
 
-* Displays EPG data for multiple channels, with channel icons and names.
-* Dynamic timeline starting from the current time, with hour ticks.
-* Highlights the program airing right now on each channel, with a progress bar.
-* Tooltips on program entries showing title, description, and start/end times (hover or keyboard focus).
-* Follows your Home Assistant theme automatically, including dark mode.
-* Full RTL support for right-to-left languages such as Hebrew and Arabic.
-* Loading skeleton, empty-channel, unavailable-channel and error states.
-* Responsive: horizontal scrolling with sticky channel names on narrow screens; your scroll position is preserved when the guide refreshes.
-* Handles programs that run past midnight, and shows tomorrow's schedule too when the integration's `full_schedule` option is enabled.
-* Half-hour timeline ticks appear automatically on wide timelines (`hour_width` of 160px or more).
-* Accessible: keyboard-focusable programs with aria labels, and reduced-motion support.
-* Easy configuration through the Lovelace UI editor.
-![screenshot](/images/screenshot.png)
+- **Today + tomorrow** in one timeline, using the real end times from the
+  integration (including programmes that end after midnight).
+- **Timeline range** starts at the whole hour of the currently‑airing programme
+  that started earliest, and ends at the whole hour after the last programme.
+- **Fixed time header** (the hours stay visible at the top) and a **sticky
+  channel column** (channel stays visible while scrolling horizontally).
+- **Channel logos**: taken from the integration's `channel_icon` attribute;
+  falls back to the channel name if there is no logo (the generic open‑epg
+  placeholder `1700.png` is treated as "no logo"). You can override logos per
+  channel via `logos`, and strip a common prefix from channel names via
+  `strip_prefix`.
+- **Now line** on the current time (white in dark theme, black in light theme),
+  a **day divider** (dashed) at midnight, and dark‑blue fill blocks for the
+  empty "past" (before the current programme) and "future" (after the last
+  programme) areas.
+- **Tooltip** with title, description and start–end time, centered on the
+  programme the mouse is over.
+- **Responsive**: the hour width scales with the card width; scrollbars stay
+  inside the card (horizontal + vertical) and the card fits the screen.
+- **Scroll with mouse drag** (grab‑to‑scroll) as well as touch.
+- Programme titles are clamped to **2 lines** with an ellipsis.
+
 ## Installation
 
-1. **Manual Installation:**
-   - Copy the `epg-card.js` file to your `/config/www/` directory (or any other directory served by your Home Assistant frontend).
-   - Add the following to your `configuration.yaml` file (adjust the path if necessary):
+### HACS (custom repository)
+1. HACS → ⋮ → Custom repositories → add this repo's URL, category *Dashboard*.
+2. Install "Lovelace EPG Card".
+3. HACS adds the resource automatically.
 
-     ```yaml
-     lovelace:
-       resources:
-         - url: /local/epg-card.js?v=1.0.0 # Add a version number to the URL for cache busting
-           type: module
-     ```
-
-2. **HACS Installation (Recommended):**
-   - Add the following repository to HACS as a custom repository: `https://github.com/yohaybn/lovelace-epg-card`
-   - Search for "Lovelace EPG Card" in HACS and install it.  HACS will handle the resource inclusion automatically.
+### Manual
+1. Copy `dist/epg-card.js` to `/config/www/epg-card.js`.
+2. Settings → Dashboards → ⋮ → Resources → Add:
+   - URL `/local/epg-card.js?v=1`, type **JavaScript Module**.
+   - Bump `?v=` when you update the file.
 
 ## Configuration
-
-You can configure the card through the Lovelace UI editor.  Just add the card to your dashboard and click "Edit".
-
-The following options are available:
-
-* **`entities` (Required):** A list of entity IDs representing your EPG sensors.  These sensors are created and managed by the [HomeAssistant-EPG](https://github.com/yohaybn/HomeAssistant-EPG) integration.
-* **`title` (Optional):** A title shown at the top of the card.
-* **`row_height` (Optional):** The height of each program row in pixels. Defaults to 72px.
-* **`hour_width` (Optional):** The minimum width in pixels allocated to one hour on the timeline. Increase it to spread programs out on wide screens; at 160px or more, half-hour ticks appear. Defaults to 110px.
-
-## Example Card Configuration
 
 ```yaml
 type: custom:epg-card
 entities:
-  - sensor.epg_channel_1
-  - sensor.epg_channel_2
-row_height: 120
-
+  - sensor.epg_npo_1
+  - sensor.epg_rtl_4
+row_height: 65          # px, height of each channel row (default 100)
+hours_per_screen: 8     # how many hours roughly fit across the card width (default 8)
+min_hour_width: 80      # px, minimum width per hour on small screens (default 80)
+# hour_width: 120       # px, optional FIXED width per hour (overrides responsive sizing)
+logo_size: 36           # px, max logo height (default 36)
+strip_prefix: "EPG Netherlands 1 "   # string or list; removed from channel names
+logos:                  # optional: override logo per channel (name OR entity id)
+  sensor.epg_npo_1: /local/images/tv/npo1.png
 ```
 
+| Option             | Type            | Default | Description |
+| ------------------ | --------------- | ------- | ----------- |
+| `entities`         | list (required) | –       | EPG sensor entity ids from the integration. |
+| `row_height`       | number (px)     | 100     | Height of each channel row. |
+| `hours_per_screen` | number          | 8       | Target number of hours visible across the card width (responsive). |
+| `min_hour_width`   | number (px)     | 80      | Lower bound for the hour width (readability on small screens). |
+| `hour_width`       | number (px)     | –       | Fixed width per hour; overrides the responsive sizing. |
+| `logo_size`        | number (px)     | 36      | Maximum logo height. |
+| `strip_prefix`     | string or list  | –       | Prefix(es) removed from channel names in the display. |
+| `logos`            | map             | –       | Logo URL per channel, keyed by channel name or entity id. |
 
-## Styling
+All of these are also editable in the card's visual (UI) editor.
 
-The card follows your active Home Assistant theme, including dark mode, so no extra styling is required. If you want to customize it further, it exposes a few CSS custom properties you can override with [card-mod](https://github.com/thomasloven/lovelace-card-mod):
+## Credits
 
-* `--epg-channel-width` - width of the channel name column (default 120px, 76px on mobile).
-* `--epg-program-border-radius` - corner radius of program blocks (default 10px).
-* `--epg-program-background` - background of upcoming programs.
-* `--epg-current-background` - background of the program airing now.
-* `--epg-current-color` - text color of the program airing now.
-
-## Development
-
-The card is a single dependency-free JavaScript file (`dist/epg-card.js`). The `tests/` directory contains a small harness that renders the card outside Home Assistant with mock data and verifies the markup:
-
-```bash
-tests/run.sh   # requires google-chrome
-```
-
-It writes screenshots for desktop, mobile, dark mode, RTL and the loading/empty/error states into `tests/screenshots/`, and runs DOM assertions for the key behaviors.
-
-
-
-## Troubleshooting
-
--   **"Custom element doesn't exist: epg-card"**: The card resource is not loading. Make sure the resource URL points at `epg-card.js` and its type is `module`, then hard-refresh (Ctrl+F5) or clear the browser cache. If you installed manually, bump the `?v=` number in the resource URL so the browser picks up the new file.
--   **"Error: No entities configured"**: Make sure you have configured at least one entity in the card configuration.
--   **"Error: Entity [entity_id] not found"**: Double-check that the entity ID is correct and that the entity exists in your Home Assistant instance. Ensure the [HomeAssistant-EPG](https://github.com/yohaybn/HomeAssistant-EPG) integration is correctly configured and working.
--   **EPG Data not showing**: Verify the [HomeAssistant-EPG](https://github.com/yohaybn/HomeAssistant-EPG) integration is providing data to the sensors. Check the Developer Tools -> States menu in Home Assistant to inspect the sensor data.
-
-
-
-## Contributing
-
-Contributions are welcome! Please submit pull requests for bug fixes, new features, or improvements, especially for styling enhancements!
-
-
-### Donate
-[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/yohaybn)
-
-If you find it helpful or interesting, consider supporting me by buying me a coffee or starring the project on GitHub! ☕⭐
-Your support helps me improve and maintain this project while keeping me motivated. Thank you! ❤️
+- Integration: [yohaybn/HomeAssistant-EPG](https://github.com/yohaybn/HomeAssistant-EPG)
+- Original card: [yohaybn/lovelace-epg-card](https://github.com/yohaybn/lovelace-epg-card)
+  and [peno64/lovelace-epg-card](https://github.com/peno64/lovelace-epg-card)
