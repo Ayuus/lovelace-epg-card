@@ -563,9 +563,15 @@ class EPGCard extends HTMLElement {
         this.config.start_offset_minutes !== undefined
           ? Number(this.config.start_offset_minutes)
           : 30;
-      scrollEl.scrollLeft = prevScroll
+      // Zolang de gebruiker niet zelf gescrold heeft blijft de startpositie
+      // gelden (ook na herbouw door resize); daarna de eigen positie behouden.
+      scrollEl.scrollLeft = this._userScrolled
         ? savedLeft
         : Math.max(0, toPx(nowMin - startOffset));
+      const markUser = () => (this._userScrolled = true);
+      scrollEl.addEventListener("wheel", markUser, { passive: true });
+      scrollEl.addEventListener("touchstart", markUser, { passive: true });
+      scrollEl.addEventListener("mousedown", markUser);
       scrollEl.scrollTop = savedTop;
       sync();
     }
